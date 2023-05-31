@@ -1,6 +1,9 @@
 from django.utils.timezone import now
 from django.contrib.auth.models import User
 from django.db import models
+from django.utils import timezone
+from uuid import uuid4
+import re
 
 from baham.constants import COLOURS, TOWNS
 from baham.enum_types import VehicleType, VehicleStatus, UserType
@@ -9,9 +12,10 @@ from baham.enum_types import VehicleType, VehicleStatus, UserType
 # Custom validators
 def validate_colour(value):
     '''
-    Validate that the value exists in the list of available colours
+    Validate that the value is a valid colour code
     '''
-    return value.upper() in COLOURS
+    regex = "^#[0-9a-fA-F]{6}$"
+    return re.fullmatch(regex, value)
 
 
 # Create your models here.
@@ -22,18 +26,63 @@ class UserProfile(models.Model):
     gender = models.CharField(max_length=1, choices=[('M', 'Male'), ('F', 'Female')])
     type = models.CharField(max_length=10, choices=[(t.name, t.value) for t in UserType])
     primary_contact = models.CharField(max_length=20, null=False, blank=False)
-    alternate_contact = models.CharField(max_length=20, null=True)
-    address = models.CharField(max_length=255)
-    address_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True)
-    address_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True)
+    alternate_contact = models.CharField(max_length=20, null=True, blank=True)
+    address = models.CharField(max_length=255, blank=True)
+    address_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    address_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     landmark = models.CharField(max_length=255, null=False)
     town = models.CharField(max_length=50, null=False, choices=[(c, c) for c in TOWNS])
     active = models.BooleanField(default=True, editable=False)
     date_deactivated = models.DateTimeField(editable=False, null=True)
-    bio = models.TextField()
+    bio = models.TextField(null=True, blank=True)
+    # Audit fields
+    date_created = models.DateTimeField(default=timezone.now, null=False, editable=False)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, null=True, editable=False, related_name='userprofile_creator')
+    date_updated = models.DateTimeField(null=True)
+    updated_by = models.ForeignKey(User, null=True, on_delete=models.CASCADE, related_name='userprofile_updater')
+    voided = models.BooleanField(default=False, null=False)
+    date_voided = models.DateTimeField(null=True)
+    voided_by = models.ForeignKey(User, null=True, on_delete=models.CASCADE, related_name='userprofile_voider')
+    void_reason = models.CharField(null=True, max_length=1024, blank=True)
+    uuid = models.UUIDField(default=uuid4, editable=False, unique=True)
 
     def __str__(self):
-        return f"{self.username} {self.first_name} {self.last_name}"
+        return self.user.username
+    
+    def save(self, created_by=None, *args, **kwargs):
+        self.date_created = timezone.now()
+        if not created_by:
+            created_by = User.objects.get(pk=1)
+        self.created_by = created_by
+        super().save()
+    
+    def update(self, updated_by=None, *args, **kwargs):
+        self.date_updated = timezone.now()
+        if (not updated_by):
+            updated_by = User.objects.get(pk=1)
+        self.updated_by = updated_by
+        self.save()
+    
+    def delete(self, voided_by=None, *args, **kwargs):
+        self.voided = True
+        self.date_voided = timezone.now()
+        if (not self.void_reason):
+            self.void_reason = 'Voided without providing a reason'
+        if (not voided_by):
+            voided_by = User.objects.get(pk=1)
+        self.voided_by = voided_by
+        self.save()
+    
+    def undelete(self, *args, **kwargs):
+        if self.voided:
+            self.voided = False
+            self.date_voided = None
+            self.void_reason = None
+            self.voided_by = None
+            self.save()
+    
+    def purge(self, *args, **kwargs):
+        self.delete()
 
 
 class VehicleModel(models.Model):
@@ -47,12 +96,57 @@ class VehicleModel(models.Model):
                             help_text="Select the vehicle chassis type")
     # Sitting capacity
     capacity = models.PositiveSmallIntegerField(null=False, default=2)
+    # Audit fields
+    date_created = models.DateTimeField(default=timezone.now, null=False, editable=False)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, null=False, editable=False, related_name='vehiclemodel_creator')
+    date_updated = models.DateTimeField(null=True)
+    updated_by = models.ForeignKey(User, null=True, on_delete=models.CASCADE, related_name='vehiclemodel_updater')
+    voided = models.BooleanField(default=False, null=False)
+    date_voided = models.DateTimeField(null=True)
+    voided_by = models.ForeignKey(User, null=True, on_delete=models.CASCADE, related_name='vehiclemodel_voider')
+    void_reason = models.CharField(null=True, max_length=1024, blank=True)
+    uuid = models.UUIDField(default=uuid4, editable=False, unique=True)
 
     class Meta:
         db_table = "baham_vehicle_model"
 
     def __str__(self):
         return f"{self.vendor} {self.model}"
+    
+    def save(self, created_by=None, *args, **kwargs):
+        self.date_created = timezone.now()
+        if not created_by:
+            created_by = User.objects.get(pk=1)
+        self.created_by = created_by
+        super().save()
+    
+    def update(self, updated_by=None, *args, **kwargs):
+        self.date_updated = timezone.now()
+        if (not updated_by):
+            updated_by = User.objects.get(pk=1)
+        self.updated_by = updated_by
+        self.save()
+    
+    def delete(self, voided_by=None, *args, **kwargs):
+        self.voided = True
+        self.date_voided = timezone.now()
+        if (not self.void_reason):
+            self.void_reason = 'Voided without providing a reason'
+        if (not voided_by):
+            voided_by = User.objects.get(pk=1)
+        self.voided_by = voided_by
+        self.save()
+    
+    def undelete(self, *args, **kwargs):
+        if self.voided:
+            self.voided = False
+            self.date_voided = None
+            self.void_reason = None
+            self.voided_by = None
+            self.save()
+    
+    def purge(self, *args, **kwargs):
+        self.delete()
 
 
 class Vehicle(models.Model):
@@ -66,9 +160,54 @@ class Vehicle(models.Model):
     status = models.CharField(max_length=50, choices=[(t.name, t.value) for t in VehicleStatus])
     picture1 = models.ImageField(upload_to='pictures', null=True)
     picture2 = models.ImageField(upload_to='pictures', null=True)
+    # Audit fields
+    date_created = models.DateTimeField(default=timezone.now, null=False, editable=False)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, null=False, editable=False, related_name='vehicle_creator')
+    date_updated = models.DateTimeField(null=True)
+    updated_by = models.ForeignKey(User, null=True, on_delete=models.CASCADE, related_name='vehicle_updater')
+    voided = models.BooleanField(default=False, null=False)
+    date_voided = models.DateTimeField(null=True)
+    voided_by = models.ForeignKey(User, null=True, on_delete=models.CASCADE, related_name='vehicle_voider')
+    void_reason = models.CharField(null=True, max_length=1024, blank=True)
+    uuid = models.UUIDField(default=uuid4, editable=False, unique=True)
 
     def __str__(self):
         return f"{self.model.vendor} {self.model.model} {self.colour}"
+    
+    def save(self, created_by=None, *args, **kwargs):
+        self.date_created = timezone.now()
+        if not created_by:
+            created_by = User.objects.get(pk=1)
+        self.created_by = created_by
+        super().save()
+    
+    def update(self, updated_by=None, *args, **kwargs):
+        self.date_updated = timezone.now()
+        if (not updated_by):
+            updated_by = User.objects.get(pk=1)
+        self.updated_by = updated_by
+        self.save()
+    
+    def delete(self, voided_by=None, *args, **kwargs):
+        self.voided = True
+        self.date_voided = timezone.now()
+        if (not self.void_reason):
+            self.void_reason = 'Voided without providing a reason'
+        if (not voided_by):
+            voided_by = User.objects.get(pk=1)
+        self.voided_by = voided_by
+        super().save()
+    
+    def undelete(self, *args, **kwargs):
+        if self.voided:
+            self.voided = False
+            self.date_voided = None
+            self.void_reason = None
+            self.voided_by = None
+            self.save()
+    
+    def purge(self, *args, **kwargs):
+        self.delete()
 
 
 class Contract(models.Model):
@@ -81,3 +220,51 @@ class Contract(models.Model):
     fuel_share = models.PositiveSmallIntegerField(help_text="Percentage of fuel contribution.")
     maintenance_share = models.PositiveSmallIntegerField(help_text="Percentage of maintenance cost contribution.")
     schedule = models.CharField(max_length=255, null=False)  #TODO: use Django Scheduler
+    # Audit fields
+    date_created = models.DateTimeField(default=timezone.now, null=False, editable=False)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, null=False, editable=False, related_name='contract_creator')
+    date_updated = models.DateTimeField(null=True)
+    updated_by = models.ForeignKey(User, null=True, on_delete=models.CASCADE, related_name='contract_updater')
+    voided = models.BooleanField(default=False, null=False)
+    date_voided = models.DateTimeField(null=True)
+    voided_by = models.ForeignKey(User, null=True, on_delete=models.CASCADE, related_name='contract_voider')
+    void_reason = models.CharField(null=True, max_length=1024, blank=True)
+    uuid = models.UUIDField(default=uuid4, editable=False, unique=True)
+    
+    def __str__(self):
+        return f"{self}" # TODO: Complete this
+    
+    def save(self, created_by=None, *args, **kwargs):
+        self.date_created = timezone.now()
+        if not created_by:
+            created_by = User.objects.get(pk=1)
+        self.created_by = created_by
+        super().save()
+    
+    def update(self, updated_by=None, *args, **kwargs):
+        self.date_updated = timezone.now()
+        if (not updated_by):
+            updated_by = User.objects.get(pk=1)
+        self.updated_by = updated_by
+        self.save()
+    
+    def delete(self, voided_by=None, *args, **kwargs):
+        self.voided = True
+        self.date_voided = timezone.now()
+        if (not self.void_reason):
+            self.void_reason = 'Voided without providing a reason'
+        if (not voided_by):
+            voided_by = User.objects.get(pk=1)
+        self.voided_by = voided_by
+        self.save()
+    
+    def undelete(self, *args, **kwargs):
+        if self.voided:
+            self.voided = False
+            self.date_voided = None
+            self.void_reason = None
+            self.voided_by = None
+            self.save()
+    
+    def purge(self, *args, **kwargs):
+        self.delete()
